@@ -8,30 +8,32 @@ import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
 import android.provider.OpenableColumns
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : Activity() {
-    private lateinit var status: TextView
-    private lateinit var devicesBox: LinearLayout
+    private lateinit var web: WebView
     private lateinit var tuner: AdaptiveTuner
     private lateinit var transfer: TransferProtocol
     private lateinit var nsd: NsdManager
     private var registration: NsdManager.RegistrationListener? = null
     private var discovery: NsdManager.DiscoveryListener? = null
-    private val devices = ConcurrentHashMap<String, Pair<String, Int>>()
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private val devices = ConcurrentHashMap<String, Device>()
+    private data class Device(val host: String, val port: Int)
     private var selectedUri: Uri? = null
     private var selectedName = "file"
+    private var ownServiceName = ""
     private val pickFile = 1001
     private val nearbyPermission = 1002
 
@@ -40,114 +42,159 @@ class MainActivity : Activity() {
         tuner = AdaptiveTuner(this)
         transfer = TransferProtocol(this, tuner)
         nsd = getSystemService(NSD_SERVICE) as NsdManager
-        buildUi()
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+        ownServiceName = "XShare-${Build.MODEL.take(18)}"
+        setupWebUi()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
+        ) {
             requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), nearbyPermission)
         } else startNetworking()
     }
 
-    private fun buildUi() {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(22, 24, 22, 20); setBackgroundColor(0xFFF4F6FA.toInt()) }
-        val title = TextView(this).apply { text = "XShare Ultra"; textSize = 28f; setTextColor(0xFF101828.toInt()); gravity = Gravity.CENTER_VERTICAL }
-        val subtitle = TextView(this).apply { text = "အနီးအနားရှိ ဖုန်းများသို့ ဖိုင်ပို့/လက်ခံ"; textSize = 14f; setTextColor(0xFF667085.toInt()); setPadding(0, 4, 0, 18) }
-        status = TextView(this).apply { text = "စတင်နေသည်…"; textSize = 14f; setTextColor(0xFF344054.toInt()); setPadding(0, 12, 0, 12) }
-        val pick = Button(this).apply { text = "ဖိုင်ရွေးပြီး ပို့မည်"; setOnClickListener { chooseFile() } }
-        val refresh = Button(this).apply { text = "စက်များ ပြန်ရှာမည်"; setOnClickListener { restartDiscovery() } }
-        val heading = TextView(this).apply { text = "တွေ့ရှိသော စက်များ"; textSize = 18f; setTextColor(0xFF101828.toInt()); setPadding(0, 20, 0, 8) }
-        devicesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(this).apply { addView(devicesBox) }
-        root.addView(title); root.addView(subtitle); root.addView(pick)
-        root.addView(refresh); root.addView(status); root.addView(heading)
-        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        setContentView(root)
+    private fun setupWebUi() {
+        web = WebView(this)
+        web.settings.javaScriptEnabled = true
+        web.settings.domStorageEnabled = true
+        web.settings.allowFileAccess = true
+        web.settings.allowContentAccess = false
+        web.webChromeClient = WebChromeClient()
+        web.webViewClient = WebViewClient()
+        web.addJavascriptInterface(NativeBridge(), "Native")
+        setContentView(web)
+        web.loadUrl("file:///android_asset/index.html")
+    }
+
+    private inner class NativeBridge {
+        @JavascriptInterface fun pickFile() { runOnUiThread { chooseFile() } }
+        @JavascriptInterface fun scan() { runOnUiThread { restartDiscovery() } }
+        @JavascriptInterface fun sendTo(name: String) { runOnUiThread { sendToDevice(name) } }
+    }
+
+    private fun setStatus(message: String) {
+        val safe = JSONObject.quote(message)
+        runOnUiThread { if (::web.isInitialized) web.evaluateJavascript("window.XShare && window.XShare.setStatus($safe)", null) }
+    }
+
+    private fun renderDevices() {
+        val array = JSONArray()
+        devices.toSortedMap().forEach { (name, endpoint) ->
+            array.put(JSONObject().put("name", name).put("host", endpoint.host).put("port", endpoint.port))
+        }
+        val json = array.toString()
+        runOnUiThread { if (::web.isInitialized) web.evaluateJavascript("window.XShare && window.XShare.renderDevices($json)", null) }
     }
 
     private fun startNetworking() {
+        try {
+            val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            multicastLock = wifi.createMulticastLock("xshare-mdns").apply { setReferenceCounted(false); acquire() }
+        } catch (_: Exception) {}
         transfer.startReceiver(
-            onIncoming = { name, size, approve ->
+            onIncoming = { name, size, decide ->
                 runOnUiThread {
-                    AlertDialog.Builder(this)
+                    val sizeText = if (size >= 1024L * 1024) "${size / (1024 * 1024)} MB" else "${size / 1024} KB"
+                    val dialog = AlertDialog.Builder(this)
                         .setTitle("ဖိုင်လက်ခံမလား?")
-                        .setMessage("$name\n${size / 1024} KB")
-                        .setPositiveButton("လက်ခံမည်") { _, _ -> approve() }
-                        .setNegativeButton("ငြင်းမည်", null)
-                        .setOnCancelListener { }
-                        .show()
+                        .setMessage("$name\n$sizeText")
+                        .setPositiveButton("လက်ခံမည်") { _, _ -> decide(true) }
+                        .setNegativeButton("ငြင်းမည်") { _, _ -> decide(false) }
+                        .setOnCancelListener { decide(false) }
+                        .create()
+                    dialog.show()
                 }
             },
-            onDone = { file, message -> runOnUiThread {
-                status.text = if (file != null) "လက်ခံပြီး: ${file.name}" else "လက်ခံမှု: $message"
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            } }
+            onDone = { file, message ->
+                setStatus(if (file != null) "$message · ${file.name}" else message)
+                runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+            }
         )
         registerService()
         startDiscovery()
-        status.text = "Wi-Fi တစ်ခုတည်းကို ချိတ်ဆက်ထားသော စက်များကို ရှာနေသည်"
+        setStatus("Wi-Fi Local Network မှ စက်များကို ရှာဖွေနေသည်")
     }
 
     private fun registerService() {
-        val info = NsdServiceInfo().apply { serviceName = "XShare-${Build.MODEL.take(18)}"; serviceType = TransferProtocol.SERVICE_TYPE; port = TransferProtocol.PORT }
+        val info = NsdServiceInfo().apply {
+            serviceName = ownServiceName
+            serviceType = TransferProtocol.SERVICE_TYPE
+            port = TransferProtocol.PORT
+        }
         registration = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) { runOnUiThread { status.text = "လက်ခံရန် အသင့်ဖြစ်ပြီ · ${serviceInfo.serviceName}" } }
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) { runOnUiThread { status.text = "စက်ကြေညာမှု မအောင်မြင်ပါ ($errorCode)" } }
+            override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+                setStatus("လက်ခံရန် အသင့်ဖြစ်ပြီ · ${serviceInfo.serviceName}")
+            }
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                setStatus("စက်ကြေညာမှု မအောင်မြင်ပါ ($errorCode)")
+            }
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {}
             override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
         }
-        try { nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, registration) } catch (_: Exception) {}
+        try { nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, registration) }
+        catch (e: Exception) { setStatus("Service register error: ${e.message}") }
     }
 
     private fun startDiscovery() {
         discovery = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(type: String) {}
+            override fun onDiscoveryStarted(type: String) { setStatus("အနီးအနားက စက်များကို ရှာနေသည်…") }
             override fun onServiceFound(info: NsdServiceInfo) {
-                if (info.serviceType.contains("_xshare._tcp")) {
-                    try {
-                        nsd.resolveService(info, object : NsdManager.ResolveListener {
-                            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
-                            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                                val host = serviceInfo.host?.hostAddress ?: return
-                                if (host == "127.0.0.1") return
-                                devices[serviceInfo.serviceName] = host to serviceInfo.port
-                                runOnUiThread { renderDevices() }
-                            }
-                        })
-                    } catch (_: Exception) {}
-                }
+                if (info.serviceName == ownServiceName || !info.serviceType.contains("_xshare._tcp")) return
+                try {
+                    nsd.resolveService(info, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {}
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                            val host = serviceInfo.host?.hostAddress ?: return
+                            devices[serviceInfo.serviceName] = Device(host, serviceInfo.port)
+                            renderDevices()
+                        }
+                    })
+                } catch (_: Exception) {}
             }
-            override fun onServiceLost(info: NsdServiceInfo) { devices.remove(info.serviceName); runOnUiThread { renderDevices() } }
+            override fun onServiceLost(info: NsdServiceInfo) {
+                devices.remove(info.serviceName)
+                renderDevices()
+            }
             override fun onDiscoveryStopped(type: String) {}
-            override fun onStartDiscoveryFailed(type: String, errorCode: Int) { runOnUiThread { status.text = "စက်ရှာမရပါ ($errorCode)" } }
+            override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
+                setStatus("စက်ရှာမရပါ ($errorCode)")
+                try { discovery?.let { nsd.stopServiceDiscovery(it) } } catch (_: Exception) {}
+            }
             override fun onStopDiscoveryFailed(type: String, errorCode: Int) {}
         }
-        try { nsd.discoverServices(TransferProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discovery) } catch (_: Exception) {}
-    }
-
-    private fun renderDevices() {
-        devicesBox.removeAllViews()
-        if (devices.isEmpty()) {
-            devicesBox.addView(TextView(this).apply { text = "စက်မတွေ့သေးပါ။ နှစ်ဖက်လုံး Wi-Fi တစ်ခုတည်း ချိတ်ထားပါ။"; setPadding(4, 12, 4, 12); setTextColor(0xFF667085.toInt()) })
-            return
-        }
-        devices.toSortedMap().forEach { (name, endpoint) ->
-            devicesBox.addView(Button(this).apply {
-                text = "ပို့ရန် → $name"
-                setOnClickListener {
-                    val uri = selectedUri
-                    if (uri == null) { Toast.makeText(this@MainActivity, "အရင်ဆုံး ဖိုင်ရွေးပါ", Toast.LENGTH_SHORT).show() }
-                    else {
-                        status.text = "$name သို့ ပို့နေသည်…"
-                        transfer.send(endpoint.first, endpoint.second, uri, selectedName,
-                            onProgress = { done, total -> runOnUiThread { status.text = "ပို့နေသည်: ${done / 1024} / ${total / 1024} KB" } },
-                            onDone = { ok, msg -> runOnUiThread { status.text = msg; Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() } })
-                    }
-                }
-            })
-        }
+        try { nsd.discoverServices(TransferProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discovery) }
+        catch (e: Exception) { setStatus("Discovery error: ${e.message}") }
     }
 
     private fun chooseFile() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
         startActivityForResult(intent, pickFile)
+    }
+
+    private fun sendToDevice(name: String) {
+        val uri = selectedUri
+        val endpoint = devices[name]
+        if (uri == null) {
+            setStatus("အရင်ဆုံး ＋ ဖိုင်ရွေးမယ် ကိုနှိပ်ပါ")
+            return
+        }
+        if (endpoint == null) {
+            setStatus("ဒီစက်ကို မတွေ့တော့ပါ။ ပြန်ရှာပါ")
+            return
+        }
+        setStatus("$name သို့ ပို့ရန် ချိတ်ဆက်နေသည်…")
+        transfer.send(endpoint.host, endpoint.port, uri, selectedName,
+            onProgress = { done, total ->
+                val percent = if (total > 0) (done * 100 / total).toInt() else 0
+                setStatus("ပို့နေသည်… $percent% · ${done / 1024} / ${total / 1024} KB")
+            },
+            onDone = { ok, message ->
+                setStatus(if (ok) "✓ $message" else "ပို့မအောင်မြင်: $message")
+                runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+            }
+        )
     }
 
     @Deprecated("Legacy result API retained for broad Android compatibility")
@@ -156,8 +203,10 @@ class MainActivity : Activity() {
         if (requestCode == pickFile && resultCode == Activity.RESULT_OK) {
             val uri = data?.data ?: return
             selectedUri = uri
+            try { data.flags.let { flags -> contentResolver.takePersistableUriPermission(uri, flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) } }
+            catch (_: Exception) {}
             selectedName = queryName(uri)
-            status.text = "ရွေးထားသောဖိုင်: $selectedName · ပို့မည့်စက်ကိုနှိပ်ပါ"
+            setStatus("ရွေးထားသောဖိုင်: $selectedName · ပို့မည့်စက်ကို ရွေးပါ")
             if (selectedName.endsWith(".apk", true)) {
                 Thread {
                     val report = ApkInspector.inspect(this, uri)
@@ -181,18 +230,26 @@ class MainActivity : Activity() {
 
     private fun restartDiscovery() {
         try { discovery?.let { nsd.stopServiceDiscovery(it) } } catch (_: Exception) {}
-        devices.clear(); renderDevices(); startDiscovery()
+        devices.clear()
+        renderDevices()
+        startDiscovery()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == nearbyPermission) startNetworking()
+        if (requestCode == nearbyPermission) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startNetworking()
+            else setStatus("Nearby Wi-Fi ခွင့်ပြုချက်လိုအပ်သည်။ Settings မှ ခွင့်ပြုပေးပါ")
+        }
     }
 
     override fun onDestroy() {
         try { discovery?.let { nsd.stopServiceDiscovery(it) } } catch (_: Exception) {}
         try { registration?.let { nsd.unregisterService(it) } } catch (_: Exception) {}
+        try { multicastLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         transfer.stop()
+        web.removeJavascriptInterface("Native")
+        web.destroy()
         super.onDestroy()
     }
 }
