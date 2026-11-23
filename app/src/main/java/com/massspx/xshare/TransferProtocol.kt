@@ -58,7 +58,7 @@ class TransferProtocol(private val context: Context, private val tuner: Adaptive
                 val output = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
                 val rawName = input.readUTF()
                 val name = rawName.substringAfterLast('/').substringAfterLast('\\')
-                    .replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120).ifBlank { "received_file" }
+                    .replace(Regex("[\\\\/:*?\\\"<>|\\u0000-\\u001F]"), "_").trim().take(120).ifBlank { "received_file" }
                 val size = input.readLong()
                 val expected = input.readUTF()
                 if (size < 0 || size > MAX_FILE_BYTES || !expected.matches(Regex("[a-fA-F0-9]{64}"))) {
