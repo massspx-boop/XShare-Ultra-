@@ -1,17 +1,26 @@
-# XShare Ultra roadmap
+# XShare Ultra — Engineering Roadmap
 
-## Implemented in the initial source drop
-- Native Android app shell and same-Wi-Fi DNS-SD discovery.
-- TCP file streaming with incoming-transfer approval.
-- SHA-256 verification and bounded memory buffers.
-- Basic offline adaptive tuning profile (low-RAM aware).
-- APK package/minimum Android version inspection.
-- GitHub Actions debug APK build.
+## Implemented in current build
+- [x] Android native Kotlin app shell (minSdk 26)
+- [x] Locally bundled responsive dark/neon HTML + CSS interface
+- [x] NSD/mDNS discovery on shared Wi-Fi
+- [x] TCP file transfer with explicit accept/reject handshake
+- [x] SHA-256 integrity verification and temporary-file commit
+- [x] Basic collision-safe filenames and transfer size validation
+- [x] Low-RAM-aware buffer sizing and local heuristic tuning
+- [x] Basic APK metadata / min-SDK inspection
+- [x] GitHub Actions debug APK build
 
 ## Next engineering milestones
-1. Add authenticated pairing and end-to-end encryption (TLS with per-session keys).
-2. Add resumable chunk transfer with persisted partial-file metadata and re-hashing.
-3. Add APK split-set (.apks/.xapk) detection, ABI and signature comparison, and install-result diagnostics.
-4. Add Wi-Fi Direct / hotspot fallback for networks without a shared access point.
-5. Train and benchmark a tiny offline LiteRT throughput model against the deterministic baseline; ship only if it wins on low-RAM devices.
-6. Benchmark against other transfer apps on identical phones and network conditions before making speed claims.
+- [ ] Add authenticated device pairing and encrypted transport (TLS or authenticated key exchange)
+- [ ] Add resumable transfers with chunk hashes and persisted transfer state
+- [ ] Add multi-file queue, cancellation, retry and detailed transfer history
+- [ ] Add Wi-Fi Direct / local hotspot fallback for networks with client isolation
+- [ ] Add foreground service and Android 13+ transfer notifications
+- [ ] Add SAF export destination picker and media visibility in Downloads
+- [ ] Add APK set inspection for split APK / XAPK / APKS without claiming one-file APK compatibility
+- [ ] Add automated protocol tests and real-device tests on Android 8–15
+- [ ] Produce a properly signed release APK after signing credentials are configured
+
+## Constraints
+The current app is LAN-only. It does not promise Zapya-level speed or universal device compatibility until tested under controlled, repeatable conditions. The adaptive controller is heuristic logic, not a machine-learning model.
