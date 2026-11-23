@@ -123,14 +123,22 @@ class TransferProtocol(private val context: Context, private val tuner: Adaptive
             val started = System.currentTimeMillis()
             var sent = 0L
             try {
-                val size = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
-                if (size < 0 || size > MAX_FILE_BYTES) throw IllegalArgumentException("ဖိုင်အရွယ်အစားကို ဖတ်မရပါ သို့မဟုတ် 20 GB ကျော်နေသည်")
+                // Do not trust AssetFileDescriptor.length: many Android document providers return -1.
+                // Count the readable stream and hash it in one bounded-memory pass.
+                var size = 0L
                 val digest = MessageDigest.getInstance("SHA-256")
                 context.contentResolver.openInputStream(uri).use { stream ->
                     if (stream == null) throw IllegalArgumentException("ဖိုင်ကို ဖွင့်မရပါ")
                     val buffer = ByteArray(128 * 1024)
-                    while (true) { val n = stream.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
+                    while (true) {
+                        val n = stream.read(buffer)
+                        if (n < 0) break
+                        size += n
+                        if (size > MAX_FILE_BYTES) throw IllegalArgumentException("ဖိုင်အရွယ်အစား 20 GB ကျော်နေသည်")
+                        digest.update(buffer, 0, n)
+                    }
                 }
+                if (size == 0L) throw IllegalArgumentException("ဖိုင်ဗလာဖြစ်နေသည် သို့မဟုတ် ဖတ်မရပါ")
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }
                 Socket().use { socket ->
                     socket.connect(java.net.InetSocketAddress(host, port), 12_000)
@@ -155,12 +163,14 @@ class TransferProtocol(private val context: Context, private val tuner: Adaptive
                             remaining -= n
                             onProgress(sent, size)
                         }
+                        // Detect a source file that grew after the initial hash/size pass.
+                        if (stream.read() != -1) throw IllegalStateException("ပို့နေစဉ် မူရင်းဖိုင်အရွယ်အစား ပြောင်းလဲသွားသည်")
                         out.flush()
                     }
                     if (input.readUnsignedByte() != 1) throw SecurityException("လက်ခံစက်တွင် ဖိုင်စစ်ဆေးမှု မအောင်မြင်ပါ")
                 }
                 tuner.record(sent, System.currentTimeMillis() - started, true)
-                onDone(true, "ပို့ပြီး · လက်ခံစက်တွင် ဖိုင်စစ်ဆေးမှုအောင်မြင်")
+                onDone(true, "ပို့ပြီး · လက်ခံစက်တွင် SHA-256 စစ်ဆေးမှုအောင်မြင်")
             } catch (e: Exception) {
                 tuner.record(sent, System.currentTimeMillis() - started, false)
                 onDone(false, e.message ?: "ပို့မှု မအောင်မြင်ပါ")
