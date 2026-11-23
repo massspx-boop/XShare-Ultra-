@@ -69,12 +69,14 @@ class AppTransferManager(private val context: Context) {
             entries.put(JSONObject().put("entry", if (index == 0) "base.apk" else "split_${index}.apk")
                 .put("size", file.length()))
         }
+        @Suppress("DEPRECATION")
+        val versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
         val manifest = JSONObject()
             .put("format", "xshare-app-bundle")
             .put("formatVersion", 1)
             .put("packageName", packageName)
             .put("versionName", info.versionName ?: "unknown")
-            .put("versionCode", if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong())
+            .put("versionCode", versionCode)
             .put("apkFiles", entries)
         ZipOutputStream(FileOutputStream(output).buffered()).use { zip ->
             zip.setLevel(0)
