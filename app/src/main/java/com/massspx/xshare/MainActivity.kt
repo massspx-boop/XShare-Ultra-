@@ -11,6 +11,8 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import java.io.File
 import android.provider.OpenableColumns
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -25,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var tuner: AdaptiveTuner
     private lateinit var transfer: TransferProtocol
+    private lateinit var appTransfer: AppTransferManager
     private lateinit var nsd: NsdManager
     private var registration: NsdManager.RegistrationListener? = null
     private var discovery: NsdManager.DiscoveryListener? = null
@@ -41,6 +44,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         tuner = AdaptiveTuner(this)
         transfer = TransferProtocol(this, tuner)
+        appTransfer = AppTransferManager(this)
         nsd = getSystemService(NSD_SERVICE) as NsdManager
         ownServiceName = "XShare-${Build.MODEL.take(18)}"
         setupWebUi()
@@ -72,6 +76,9 @@ class MainActivity : Activity() {
         @JavascriptInterface fun pickFile() { runOnUiThread { chooseFile() } }
         @JavascriptInterface fun scan() { runOnUiThread { restartDiscovery() } }
         @JavascriptInterface fun sendTo(name: String) { runOnUiThread { sendToDevice(name) } }
+        @JavascriptInterface fun loadApps() { runOnUiThread { loadApps() } }
+        @JavascriptInterface fun backupApp(packageName: String) { runOnUiThread { backupApp(packageName) } }
+        @JavascriptInterface fun installBundle(fileName: String) { runOnUiThread { installBundle(fileName) } }
     }
 
     private fun setStatus(message: String) {
@@ -110,11 +117,13 @@ class MainActivity : Activity() {
             onDone = { file, message ->
                 setStatus(if (file != null) "$message · ${file.name}" else message)
                 runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+                if (file != null) renderReceivedBundles()
             }
         )
         registerService()
         startDiscovery()
         setStatus("Wi-Fi Local Network မှ စက်များကို ရှာဖွေနေသည်")
+        renderReceivedBundles()
     }
 
     private fun registerService() {
@@ -222,6 +231,83 @@ class MainActivity : Activity() {
                 }.start()
             }
         }
+    }
+
+
+    private fun loadApps() {
+        Thread {
+            try {
+                val apps = appTransfer.listUserApps()
+                val array = JSONArray()
+                apps.forEach { app ->
+                    array.put(JSONObject().put("packageName", app.packageName)
+                        .put("label", app.label).put("version", app.version).put("apkCount", app.apkCount))
+                }
+                val json = array.toString()
+                runOnUiThread {
+                    web.evaluateJavascript("window.XShare && window.XShare.renderApps($json)", null)
+                }
+            } catch (e: Exception) {
+                setStatus("App စာရင်းဖတ်မရပါ: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun backupApp(packageName: String) {
+        setStatus("APK အစိတ်အပိုင်းအားလုံးကို စုစည်းနေသည်…")
+        Thread {
+            try {
+                val file = appTransfer.createBundle(packageName)
+                selectedUri = Uri.fromFile(file)
+                selectedName = file.name
+                setStatus("App Bundle ပြင်ဆင်ပြီး · ${file.name} · ပို့မည့်စက်ကို ရွေးပါ")
+                runOnUiThread { Toast.makeText(this, "APK အားလုံးပါသော Bundle ပြင်ဆင်ပြီးပါပြီ", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                setStatus("App Backup မအောင်မြင်ပါ: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun receivedDirectory(): File =
+        getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+
+    private fun renderReceivedBundles() {
+        val files = receivedDirectory().listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".xshare", true) }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        val array = JSONArray()
+        files.forEach { file ->
+            array.put(JSONObject().put("name", file.name).put("size", file.length()))
+        }
+        val json = array.toString()
+        runOnUiThread {
+            if (::web.isInitialized) web.evaluateJavascript("window.XShare && window.XShare.renderReceived($json)", null)
+        }
+    }
+
+    private fun installBundle(fileName: String) {
+        val base = receivedDirectory().canonicalFile
+        val file = File(base, fileName).canonicalFile
+        if (file.parentFile != base || !file.isFile || !file.name.endsWith(".xshare", true)) {
+            setStatus("ရွေးထားသော App Bundle ဖိုင် မမှန်ပါ")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            setStatus("APK Install ခွင့်ပြုချက်လိုအပ်သည်။ Settings မှ XShare Ultra ကို ခွင့်ပြုပါ")
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName"))
+            startActivity(intent)
+            return
+        }
+        setStatus("Split APK များကို စစ်ဆေးပြီး Install အတွက် ပြင်ဆင်နေသည်…")
+        Thread {
+            try {
+                AppBundleInstaller.install(this, file)
+                setStatus("Android Installer ထံ ပို့ပြီးပါပြီ။ ပေါ်လာသော Install အတည်ပြုချက်ကို နှိပ်ပါ")
+            } catch (e: Exception) {
+                setStatus("Install မအောင်မြင်ပါ: ${e.message}")
+            }
+        }.start()
     }
 
     private fun queryName(uri: Uri): String {
