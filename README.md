@@ -4,40 +4,49 @@ Android file sharing over a shared local Wi-Fi network. Built with Kotlin and a 
 
 ## Current implementation
 
-- Dark neon responsive UI (HTML/CSS) bundled locally; no remote website or CDN required.
-- Android native Kotlin networking using NSD/mDNS device discovery and TCP transfer.
-- Receiver approval/rejection handshake before file bytes are sent.
-- SHA-256 integrity verification at the receiving device.
-- Temporary .part files are renamed only after a successful integrity check.
-- Collision-safe received filenames and basic filename sanitization.
-- Adaptive single-stream buffer sizing using device low-RAM status and local transfer history.
-- APK metadata inspection for package, version and minimum Android SDK.
-- GitHub Actions builds a debug APK on each push.
+- Dark neon responsive Burmese UI bundled locally; no remote website or CDN required.
+- Android native Kotlin networking using NSD/mDNS discovery and TCP file transfer.
+- Receiver approval before transfer and SHA-256 integrity verification.
+- Handles document providers that report unknown file sizes by counting and hashing a bounded-memory stream.
+- Unicode-safe received filenames and temporary files committed only after checksum verification.
+- Low-RAM adaptive transfer buffers.
+- APK metadata inspection.
+- **Installed app backup:** lists user-installed apps and packages the base APK plus every installed split APK into a single `.xshare` archive.
+- **Split APK install:** receiver extracts the bundle and submits all APK splits in one Android PackageInstaller session. Android displays its normal install confirmation; the user must approve it.
+- GitHub Actions builds a debug APK.
 
 ## Build
 
-The repository uses Gradle 8.9 and JDK 17.
+Requires Gradle 8.9 and JDK 17.
 
     gradle --no-daemon :app:assembleDebug
 
-APK output: app/build/outputs/apk/debug/app-debug.apk.
+APK output: `app/build/outputs/apk/debug/app-debug.apk`.
 
-## How to use
+## Transfer files
 
 1. Install XShare Ultra on both Android devices.
-2. Connect both devices to the same Wi-Fi network (internet access is not required).
-3. Open XShare Ultra on both devices and allow Nearby Wi-Fi permission when Android requests it.
-4. On the sending phone, tap "ဖိုင်ရွေးမယ်" and choose a file.
-5. Tap the receiving phone in the discovered devices list.
-6. The receiving phone must approve the transfer.
+2. Connect both devices to the same Wi-Fi network.
+3. Open XShare Ultra on both devices and allow Nearby Wi-Fi permission.
+4. Select a file, choose the receiving device, and approve the incoming transfer.
 
-Received files are stored in the app-specific Downloads folder. Android may remove these files if the app is uninstalled.
+## Transfer an installed game/app
 
-## Important security and compatibility notes
+1. On the sending phone, open **ဂိမ်း / App ကူးပြောင်းခြင်း** and tap **App စာရင်းဖွင့်မယ်**.
+2. Choose the game/app and tap **Bundle ထုတ်**. XShare packages its base APK and installed split APK files into one `.xshare` file.
+3. Select the receiving phone from the device list and send the generated bundle.
+4. On the receiving phone, find the file under **လက်ခံထားသော Game Bundle** and tap **Install**.
+5. If Android asks, allow XShare Ultra to install unknown apps in Settings, return to XShare, tap Install again, and approve Android's package installer confirmation.
 
-- Current transport is TCP on the local network. SHA-256 detects in-transit modification, but it is not encryption or device authentication. Only transfer files on a trusted Wi-Fi network.
-- Both phones must run a compatible XShare Ultra build and be on the same local network. Guest Wi-Fi or router client isolation may block discovery/transfer.
-- Current transfer limit is 20 GB; the source provider must expose a readable file size.
-- This is a debug build, not a signed Play Store release.
-- Wi-Fi Direct / hotspot fallback, encrypted pairing, resumable transfers, multi-file queues, split APK/XAPK/APKS installation support, and background transfer notifications are not implemented yet.
-- Adaptive tuning is a small offline heuristic, not a trained AI model.
+## Important limitations
+
+- This transfers the APK package parts that are installed on the source phone. It does not copy Play Store account/license entitlements.
+- The target phone must be compatible with the APK's Android version, CPU ABI, features, and signing certificate. Android will reject incompatible or differently signed packages.
+- Some games download large OBB/asset/data files separately or store user data in protected locations. Those files are **not included** in this version; the game may download its data again after installation.
+- Dynamic features or Play Asset Delivery content may need to be downloaded by the game after installation.
+- The receiver must explicitly approve installation. XShare cannot silently install apps or bypass Android security.
+- App visibility uses QUERY_ALL_PACKAGES to list installed apps. This is suitable for this sideloaded utility build but is restricted for Google Play distribution.
+- The transfer protocol is local TCP with SHA-256 integrity checking, not encryption or device authentication. Use a trusted Wi-Fi network.
+- Both devices must run a compatible XShare Ultra build. Guest Wi-Fi/client isolation may block discovery.
+- This is a debug APK, not a signed Play Store release.
+- Wi-Fi Direct/hotspot fallback, resumable transfers, encrypted pairing, and OBB/data-folder migration are not implemented yet.
