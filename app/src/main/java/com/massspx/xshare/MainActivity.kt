@@ -48,6 +48,10 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), nearbyPermission)
+        } else if (Build.VERSION.SDK_INT <= 32 &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), nearbyPermission)
         } else startNetworking()
     }
 
@@ -238,8 +242,11 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == nearbyPermission) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startNetworking()
-            else setStatus("Nearby Wi-Fi ခွင့်ပြုချက်လိုအပ်သည်။ Settings မှ ခွင့်ပြုပေးပါ")
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                startNetworking()
+            } else {
+                setStatus("အနီးအနားစက်ရှာဖွေရန် Wi-Fi/Location ခွင့်ပြုချက်လိုအပ်သည်။ Settings မှ ခွင့်ပြုပေးပါ")
+            }
         }
     }
 
