@@ -138,7 +138,6 @@ class TransferProtocol(private val context: Context, private val tuner: Adaptive
                         digest.update(buffer, 0, n)
                     }
                 }
-                if (size == 0L) throw IllegalArgumentException("ဖိုင်ဗလာဖြစ်နေသည် သို့မဟုတ် ဖတ်မရပါ")
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }
                 Socket().use { socket ->
                     socket.connect(java.net.InetSocketAddress(host, port), 12_000)
